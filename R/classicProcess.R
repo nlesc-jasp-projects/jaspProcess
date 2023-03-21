@@ -16,142 +16,167 @@
 #
 
 # Main function ----
-ClassicProcess <- function(jaspResults, dataset, options) {
+ClassicProcess <- function(jaspResults, dataset = NULL, options) {
+  print("Hello World!")
   # Set title
-  jaspResults$title <- "Mock Analysis"
+  jaspResults$title <- "Process Analysis"
   # Init options: add variables to options to be used in the remainder of the analysis
-  options <- .mockInitOptions(jaspResults, options)
+  options <- .procInitOptions(jaspResults, options)
   # read dataset
-  dataset <- .mockReadData(options)
+  dataset <- .procReadData(options)
   # error checking
-  errors <- .mockErrorHandling(dataset, options)
+  ready <- .procErrorHandling(dataset, options)
 
   # Compute (a list of) results from which tables and plots can be created
-  mockResults <- .mockComputeResults(jaspResults, dataset, options)
+  procResults <- .procComputeResults(jaspResults, dataset, options)
 
   # Output containers, tables, and plots based on the results. These functions should not return anything!
-  .mockContainerMain( jaspResults, options, mockResults)
-  .mockTableSomething(jaspResults, options, mockResults)
-  .mockTableSthElse(  jaspResults, options, mockResults)
-  .mockPlotSomething( jaspResults, options, mockResults)
+  mainContainer <- .procContainerMain(jaspResults, options, procResults)
+
+  jaspSem:::.medPathPlot(jaspResults, options, ready)
+  # .procTableSomething(jaspResults, options, procResults)
+  # .procTableSthElse(  jaspResults, options, procResults)
+  # .procPlotSomething( jaspResults, options, procResults)
+  jaspResults[["plot"]]$dependOn(.procGetDependencies())
 
   return()
 }
 
+.procGetDependencies <- function() {
+  return(c('dependent', 'covariates', 'factors', 'processModels'))
+}
+
 # Init functions ----
-.mockInitOptions <- function(jaspResults, options) {
+.procInitOptions <- function(jaspResults, options) {
   # Determine if analysis can be run with user input
   # Calculate any options common to multiple parts of the analysis
-  options
+  model = options[["processModels"]][[1]]
+
+  outcomes = sapply(model[["processRelationships"]], function(rel) rel[["processDependent"]])
+  predictors = sapply(model[["processRelationships"]], function(rel) rel[["processIndependent"]])
+  mediators = sapply(model[["processRelationships"]], function(rel) rel[["processMediatorModerator"]])
+
+  options[["outcomes"]] <- encodeColNames(outcomes)
+  options[["predictors"]] <- encodeColNames(predictors)
+  options[["mediators"]] <- encodeColNames(mediators)
+
+  options[["pathPlot"]] <- TRUE
+  options[["pathPlotParameter"]] <- TRUE
+  options[["pathPlotLegend"]] <- FALSE
+
+  return(options)
 }
 
-.mockReadData <- function(options) {
-  # Read in the dataset using the built-in functions
-  if (options$groupvar == "") {
-    dataset <- .readDataSetToEnd(columns = variables)
-  } else {
-    dataset <- .readDataSetToEnd(columns = variables, columns.as.factor = options$groupvar)
-  }
-  dataset
+.procReadData <- function(options) {
+  # Read in selected variables from dataset
+  vars <- lapply(c('dependent', 'covariates', 'factors'), function(x) options[[x]])
+  dataset <- .readDataSetToEnd(columns = unlist(vars))
+  return(dataset)
 }
 
-.mockErrorHandling <- function(dataset, options) {
+.procErrorHandling <- function(dataset, options) {
   # See error handling
-  # Either it should be like this
+  vars <- lapply(.procGetDependencies(), function(x) options[[x]])
   .hasErrors(dataset, "run", type = c('observations', 'variance', 'infinity'),
-             all.target = options$variables,
+             all.target = vars,
              observations.amount = '< 2',
              exitAnalysisIfErrors = TRUE)
 
-  # Or like this, if you want to do sth with the errors
-  errors <- .hasErrors(dataset, "run", message = "short",
-    	                 type = c('observations', 'variance', 'infinity'),
-                       all.target = options$variables,
-                       observations.amount = '< 2')
-  errors
+  return(TRUE)
 }
 
 # Results functions ----
-.mockComputeResults <- function(jaspResults, dataset, options) {
-  if (is.null(jaspResults[["stateMockResults"]])) {
-    mockResults <- .mockResultsHelper(dataset)
-
-    jaspResults[["stateMockResults"]] <- createJaspState(mockResults)
-    jaspResults[["stateMockResults"]]$dependOnOptions("variables")
-
+.procComputeResults <- function(jaspResults, dataset, options) {
+  # Function to compute and store results in container
+  if (is.null(jaspResults[["stateProcResults"]])) {
+    syntax = jaspSem:::.medToLavMod(options)
+    procResults <- .procResultsHelper(dataset, options)
+    jaspResults[["model"]] <- createJaspState(object = procResults, dependencies = .procGetDependencies())
   } else {
-    mockResults <- jaspResults[["stateMockResults"]]$object
+    procResults <- jaspResults[["model"]]$object
   }
-  mockResults
+  procResults
 }
 
-.mockResultsHelper <- function(dataset) {
-  # do actual computations
+.procResultsHelper <- function(dataset, options) {
+  # Helper function to compute actual results
+  procResult <- lavaan::sem(
+    model           = jaspSem:::.medToLavMod(options),
+    data            = dataset,
+    se              = "standard"
+  )
+
+  return(procResult)
 }
 
 # Output functions ----
-.mockContainerMain <- function(jaspResults, options, mockResults) {
-  if (!is.null(jaspResults[["mockMainContainer"]])) return()
-  
-  mainContainer <- createJaspContainer("Model fit tables")
-  mainContainer$dependOnOptions(c("variables", "someotheroption"))
-  
-  jaspResults[["mockMainContainer"]] <- mainContainer
+# These are not in use for now, but left here as orientation for later
+.procContainerMain <- function(jaspResults, options, procResults) {
+  if (!is.null(jaspResults[["procMainContainer"]])) {
+    mainContainer <- jaspResults[["procMainContainer"]]
+  } else {
+    mainContainer <- createJaspContainer("Model fit tables")
+    mainContainer$dependOn(.procGetDependencies())
+    
+    jaspResults[["procMainContainer"]] <- mainContainer
+  }
+
+  return(mainContainer)
 }
 
-.mockTableSomething <- function(jaspResults, options, mockResults) {
-  if (!is.null(jaspResults[["mockMainContainer"]][["mockTable"]])) return()
+.procTableSomething <- function(jaspResults, options, procResults) {
+  if (!is.null(jaspResults[["procMainContainer"]][["procTable"]])) return()
 
   # Below is one way of creating a table
-  mockTable <- createJaspTable(title = "Mock Table")
-  mockTable$dependOnOptions(c("variables", "someotheroption")) # not strictly necessary because container
+  procTable <- createJaspTable(title = "proc Table")
+  procTable$dependOnOptions(c("variables", "someotheroption")) # not strictly necessary because container
 
   # Bind table to jaspResults
-  jaspResults[["mockMainContainer"]][["mockTable"]] <- mockTable
+  jaspResults[["procMainContainer"]][["procTable"]] <- procTable
 
   # Add column info
-  mockTable$addColumnInfo(name = "chisq",  title = "\u03a7\u00b2", type = "number", format = "sf:4")
-  mockTable$addColumnInfo(name = "pvalue", title = "p",            type = "number", format = "dp:3;p:.001")
-  mockTable$addColumnInfo(name = "BF",     title = "Bayes Factor", type = "number", format = "sf:4")
-  mockTable$addColumnInfo(name = "sth",    title = "Some Title",   type = "string")
+  procTable$addColumnInfo(name = "chisq",  title = "\u03a7\u00b2", type = "number", format = "sf:4")
+  procTable$addColumnInfo(name = "pvalue", title = "p",            type = "number", format = "dp:3;p:.001")
+  procTable$addColumnInfo(name = "BF",     title = "Bayes Factor", type = "number", format = "sf:4")
+  procTable$addColumnInfo(name = "sth",    title = "Some Title",   type = "string")
 
   # Add data per column
-  mockTable[["chisq"]]  <- mockResults$column1
-  mockTable[["pvalue"]] <- mockResults$column2
-  mockTable[["BF"]]     <- mockResults$column3
-  mockTable[["sth"]]    <- mockResults$sometext
+  procTable[["chisq"]]  <- procResults$column1
+  procTable[["pvalue"]] <- procResults$column2
+  procTable[["BF"]]     <- procResults$column3
+  procTable[["sth"]]    <- procResults$sometext
 }
 
-.mockTableSthElse <- function(jaspResults, options, mockResults) {
-  if (!is.null(jaspResults[["mockMainContainer"]][["mockTable2"]])) return()
+.procTableSthElse <- function(jaspResults, options, procResults) {
+  if (!is.null(jaspResults[["procMainContainer"]][["procTable2"]])) return()
   
   # Below is one way of creating a table
-  mockTable2 <- createJaspTable(title = "Mock Table Something Else")
-  mockTable2$dependOnOptions(c("variables", "someotheroption"))
+  procTable2 <- createJaspTable(title = "proc Table Something Else")
+  procTable2$dependOnOptions(c("variables", "someotheroption"))
   
   # Bind table to jaspResults
-  jaspResults[["mockMainContainer"]][["mockTable2"]] <- mockTable2
+  jaspResults[["procMainContainer"]][["procTable2"]] <- procTable2
   
   # Add column info
-  mockTable2$addColumnInfo(name = "hallo", title = "Hallo", type = "string")
-  mockTable2$addColumnInfo(name = "doei",  title = "Doei",  type = "string")
+  procTable2$addColumnInfo(name = "hallo", title = "Hallo", type = "string")
+  procTable2$addColumnInfo(name = "doei",  title = "Doei",  type = "string")
   
   # Calculate some data from results
-  mockSummary <- summary(mockResults$someObject)
+  procSummary <- summary(procResults$someObject)
   
   # Add data per column. Calculations are allowed here too!
-  mockTable2[["hallo"]] <- ifelse(mockSummary$hallo > 1, "Hallo!", "Hello!")
-  mockTable2[["doei"]]  <- mockSummary$doei^2
+  procTable2[["hallo"]] <- ifelse(procSummary$hallo > 1, "Hallo!", "Hello!")
+  procTable2[["doei"]]  <- procSummary$doei^2
 }
 
-.mockPlotSomething <- function(jaspResults, options, mockResults) {
-  if (!is.null(jaspResults[["mockPlot"]])) return()
+.procPlotSomething <- function(jaspResults, options, procResults) {
+  if (!is.null(jaspResults[["procPlot"]])) return()
 
-  mockPlot <- createJaspPlot(title = "Mock Plot", height = 320, width = 480)
-  mockPlot$dependOnOptions(c("variables", "someotheroption"))
+  procPlot <- createJaspPlot(title = "proc Plot", height = 320, width = 480)
+  procPlot$dependOnOptions(c("variables", "someotheroption"))
   
   # Bind plot to jaspResults
-  jaspResults[["mockPlot"]] <- mockPlot
+  jaspResults[["procPlot"]] <- procPlot
 
-  mockPlot$plotObject <- plot(mockResults$someObject)
+  procPlot$plotObject <- plot(procResults$someObject)
 }
