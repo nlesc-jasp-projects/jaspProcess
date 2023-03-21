@@ -42,91 +42,123 @@ Form
 	Section
 	{
 		title: qsTr("Models")
-		columns: 1
+		columns: 2
 
-		// VariablesList
-		// {
-		// 	name: "assignedCovariates"
-		// 	source: ["covariates", "factors"]
-		// 	listViewType: JASP.AssignedVariables
-		// 	preferredHeight: 100 * preferencesModel.uiScale
-		// 	draggable: false
+		TabView
+		{
+			id:					models
+			name:				"processModels"
+			maximumItems:		10
+			newItemName:		qsTr("Model 1")
+			optionKey:			"name"
 
-		// 	rowComponent: Row
-		// 	{
-		// 		Label
-		// 		{
-		// 			text: dependent
-		// 		}
-		// 		DropDown
-		// 		{
-		// 			name: "mode"
-		// 			indexDefaultValue: 0
-		// 			values:
-		// 				[
-		// 				{ label: qsTr("Additive"), value: "additive"				},
-		// 				{ label: qsTr("Multiplicative"), value: "multiplicative"	},
-		// 			]
-		// 		}
-		// 	}
-		// }
-
-				// spacing: 0 * preferencesModel.uiScale
-				RowLayout
+			content: Group
+			{
+				RadioButtonGroup
 				{
-					Label { text: qsTr("Independent"); }
-					Label { text: qsTr("Dependent")}
-					Label { text: qsTr("Mediator")}
-					Label { text: qsTr("Moderator")}
+					name: "inputType"
+					title: qsTr("Input type")
+					radioButtonsOnSameRow: true
+					columns: 3
+
+					RadioButton{
+						id: variables
+						value: "inputVariables"
+						label: qsTr("Variables")
+						checked: true
+					}
+					RadioButton{
+						id: modelNumber
+						value: "inputModelNumber"
+						label: qsTr("Model number")
+					}
+					RadioButton{
+						id: syntax
+						value: "inputSyntax"
+						label: qsTr("Syntax")
+					}
 				}
 
-				ComponentsList
+				Group
 				{
-					name: "seasonalities"
-					preferredWidth: form.width
-					rowComponent: RowLayout
-					{
-						Row
-						{
-							// Layout.preferredWidth: 100 * preferencesModel.uiScale
-							// spacing: 4 * preferencesModel.uiScale
+					visible: variables.checked
 
+					RowLayout
+					{
+						Label { text: qsTr("Independent"); }
+						Label { text: qsTr("Dependent")}
+						Label { text: qsTr("Mediator")}
+						Label { text: qsTr("Moderator")}
+					}
+
+					ComponentsList
+					{
+						name: "processRelationships"
+						
+						preferredWidth: models.width
+						rowComponent: RowLayout
+						{
+							Layout.columnSpan: 4
 							DropDown
 							{
-								name: 'independent'
+								name: 'processIndependent'
 								source: ['covariates', 'factors']
 							}
-						}
-						Row
-						{
 							DropDown
 							{
-								name: 'dependent_mediators'
+								name: 'processDependent'
 								source: ['dependent']
-								Component.onCompleted: {
-									console.log("Completed Running!")
-								}
-							}
-						}
-						Row
-						{
+							}							
 							DropDown
 							{
-								id: type
-								name: 'type'
-								values: ['Mediator', 'Moderator']
+								name: 'processType'
+								values: ['Mediator', 'Moderator', 'Confounder']
 							}
-						}
-						Row
-						{
 							DropDown
 							{
-								id: meds
-								name: 'mediators_moderators'
+								name: 'processMediatorModerator'
 								source: ['covariates', 'factors']
 							}
 						}
 					}
 				}
+
+				DropDown
+				{
+					name: "modelNumber"
+					label: qsTr("Model number")
+					values: [1, 2, 3, 4, 5]
+					visible: modelNumber.checked
+				}
+
+				TextArea 
+				{
+					name: "syntax"
+					width: models.width
+					textType: JASP.TextTypeLavaan
+					visible: syntax.checked
+				}
+			}
+		}
+	}
+
+	Section
+	{
+		title: qsTr("Models 2")
+
+		VariablesForm
+		{
+			preferredHeight: jaspTheme.smallDefaultVariablesFormHeight
+			AvailableVariablesList		{	name: "allVariablesList2";	source: ['covariates', 'factors'] }
+			VariablesList
+			{
+				name:  "variablePairs"
+				listViewType			: JASP.AssignedVariables
+				dropMode				: JASP.DropReplace
+				showElementBorder		: true
+				columns					: 3
+				showVariableTypeIcon	: false
+			}
+		}
 	}
 }
