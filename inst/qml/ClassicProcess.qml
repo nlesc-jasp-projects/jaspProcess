@@ -27,13 +27,13 @@ Form
         AssignedVariablesList
         {
             name:			"covariates"
-            title:			qsTr("Covariates")
+            title:			qsTr("Continuous Predictors")
             allowedColumns:	["ordinal", "scale"]
         }
         AssignedVariablesList
         {
             name:			"factors"
-            title:			qsTr("Factors")
+            title:			qsTr("Categorical Predictors")
             allowedColumns:	["ordinal", "nominal", "nominalText"]
         }
     }
@@ -42,48 +42,6 @@ Form
     {
         title: qsTr("Models")
         columns: 1
-
-        Group
-        {
-            title: qsTr("Set for all models")
-            columns: 2
-
-            Group
-            {
-                CheckBox
-                {
-                    id:			pathCoefficientsForAllModels
-                    name: 		"pathCoefficientsForAllModels"
-                    label: 		qsTr("Path coefficients")
-                    checked: 	true
-                }
-
-                CheckBox
-                {
-                    id:			mediationEffectsForAllModels
-                    name: 		"mediationEffectsForAllModels"
-                    label: 		qsTr("Mediation effects")
-                    checked: 	true
-                }
-            }
-
-            Group
-            {
-                CheckBox
-                {
-                    id:			conceptualPathPlotsForAllModels
-                    name: 		"conceptualPathPlotsForAllModels"
-                    label: 		qsTr("Conceptual path plots")
-                    checked: 	true
-                }
-                CheckBox
-                {
-                    id:			statisticalPathPlotsForAllModels
-                    name: 		"statisticalPathPlotsForAllModels"
-                    label: 		qsTr("Statistical path plots")
-                }
-            }
-        }
 
         TabView
         {
@@ -98,6 +56,7 @@ Form
                 Group {
                     anchors.left: 		parent.left
                     anchors.margins: 	jaspTheme.contentMargin
+                    
                     RadioButtonGroup
                     {
                         name: 					"inputType"
@@ -169,6 +128,7 @@ Form
                             name: 					"processRelationships"
                             preferredWidth: 		models.width - 2 * jaspTheme.contentMargin
                             itemRectangle.color: 	jaspTheme.controlBackgroundColor
+                            minimumItems:           1
                             rowComponent: 			RowLayout
                             {
                                 id: 		rowComp
@@ -177,19 +137,41 @@ Form
                                 Layout.columnSpan: 4
                                 DropDown
                                 {
-                                    id: 				procIndep
-                                    name: 				'processIndependent'
-                                    source: 			['covariates', 'factors']
-                                    controlMinWidth: 	modelsGroup.colWidth
-                                    addEmptyValue: 		true
+                                    id: 				    procIndep
+                                    name: 				    'processIndependent'
+                                    source: 			    ['covariates', 'factors']
+                                    controlMinWidth: 	    modelsGroup.colWidth
+                                    addEmptyValue: 		    true
+                                    onCurrentValueChanged:
+                                    {
+                                        if (currentIndex > 0 && (procVar.currentValue == currentValue || procDep.currentValue == currentValue))
+                                            addControlError("Same value!")
+                                        else
+                                        {
+                                            clearControlError()
+                                            procVar.clearControlError()
+											procDep.clearControlError()
+                                        }
+                                    }
                                 }
                                 DropDown
                                 {
                                     id: 				procDep
                                     name: 				'processDependent'
-                                    source: 			['dependent', "processVariable"]
+                                    source: 			["dependent", "processVariable"] //, {name: "processRelationships.processVariable", use: "discardIndex=" + (relations.count - 1)}]
                                     controlMinWidth: 	modelsGroup.colWidth
                                     addEmptyValue: 		true
+									onCurrentValueChanged:
+                                    {
+                                        if (currentIndex > 0 && (procVar.currentValue == currentValue || procIndep.currentValue == currentValue))
+                                            addControlError("Same value!")
+                                        else
+                                        {
+                                            clearControlError()
+                                            procVar.clearControlError()
+											procIndep.clearControlError()
+                                        }
+                                    }
                                 }
                                 DropDown
                                 {
@@ -214,12 +196,23 @@ Form
                                 }
                                 DropDown
                                 {
-                                    id: 				procVar
-                                    name: 				'processVariable'
-                                    enabled: 			procType.currentValue != "directs"
-                                    source: 			procType.currentValue == 'mediators' ? ['covariates'] : ['covariates', 'factors']
-                                    controlMinWidth: 	modelsGroup.colWidth
-                                    addEmptyValue: 		true
+                                    id: 				    procVar
+                                    name: 				    'processVariable'
+                                    enabled: 			    procType.currentValue != "directs"
+                                    source: 			    procType.currentValue == 'mediators' ? ['covariates'] : ['covariates', 'factors']
+                                    controlMinWidth: 	    modelsGroup.colWidth
+                                    addEmptyValue: 		    true
+                                    onCurrentValueChanged:
+                                    {
+                                        if (currentIndex > 0 && (procIndep.currentValue == currentValue || procDep.currentValue == currentValue))
+                                            addControlError("Same value!")
+                                        else
+                                        {
+                                            clearControlError()
+                                            procIndep.clearControlError()
+											procDep.clearControlError()
+                                        }
+                                    }
                                 }
                                 function enableAddItemManually()
                                 {
@@ -265,13 +258,13 @@ Form
                             AssignedVariablesList
                             {
                                 name: 				"modelNumberIndependent"
-                                title: 				qsTr("Independent")
+                                title: 				qsTr("Independent X")
                                 singleVariable: 	true
                             }
                             AssignedVariablesList
                             {
                                 name: 				"modelNumberMediators"
-                                title: 				qsTr("Mediators")
+                                title: 				qsTr("Mediators M")
                                 allowedColumns: 	["scale", "ordinal"]
                             }
                             AssignedVariablesList
@@ -282,12 +275,14 @@ Form
                             }
                             AssignedVariablesList
                             {
+								id: modelNumberModeratorW
                                 name: 				"modelNumberModeratorW"
                                 title: 				qsTr("Moderator W")
                                 singleVariable: 	true
                             }
                             AssignedVariablesList
                             {
+								id: modelNumberModeratorZ
                                 name: 				"modelNumberModeratorZ"
                                 title: 				qsTr("Moderator Z")
                                 singleVariable: 	true
@@ -297,30 +292,61 @@ Form
 
 					Group
 					{
+                        id: opts
 						title: 		qsTr("Options for %1").arg(rowValue)
-						columns: 	2
-
+						columns: 	3
+                        
 						Group
 						{
-							title: 		qsTr("Parameter estimates")
-							columns: 	1
+                            title: qsTr("Residual Covariances")
+
 							CheckBox
 							{
-								name: "pathCoefficients"
-								label: qsTr("Path coefficients")
-								checked: pathCoefficientsForAllModels.checked
+								name: "independentCovariances"
+								label: qsTr("Independent variables")
+								checked: independentCovariancesForAllModels.checked
 							}
 							CheckBox
 							{
-								name: "mediationEffects"
-								label: qsTr("Mediation effects")
-								checked: mediationEffectsForAllModels.checked
+								name: "mediatorCovariances"
+								label: qsTr("Mediators")
+								checked: mediatorCovariancesForAllModels.checked
 							}
 						}
 
 						Group
 						{
-							title: 		qsTr("Path plots")
+                            title: qsTr("Effects")
+							columns: 	1
+							CheckBox
+							{
+								name: "pathCoefficients"
+								label: qsTr("Paths")
+								checked: pathCoefficientsForAllModels.checked
+							}
+							CheckBox
+							{
+								name: "mediationEffects"
+								label: qsTr("Mediation")
+								checked: mediationEffectsForAllModels.checked
+							}
+							CheckBox
+							{
+								name: "totalEffects"
+								label: qsTr("Total")
+								checked: totalEffectsForAllModels.checked
+							}
+							CheckBox
+							{
+								name: "residualCovariances"
+								label: qsTr("Residual covariances")
+								checked: residualCovariancesForAllModels.checked
+							}
+						}
+
+						Group
+						{
+                            title: qsTr("Path Plots")
 							columns: 	1
 							CheckBox
 							{
@@ -352,6 +378,8 @@ Form
 			CheckBox { label: qsTr("Standardized estimates") ;  name: "standardizedEstimates" }
 			CheckBox { label: qsTr("Lavaan syntax")     ;       name: "syntax" }
 			CheckBox { label: qsTr("R-squared")         ;       name: "rSquared" }
+			CheckBox { label: qsTr("AIC weights")         ;     name: "aicWeights" }
+			CheckBox { label: qsTr("BIC weights")         ;     name: "bicWeights" }
 		}
         GroupBox
         {
@@ -391,36 +419,129 @@ Form
     Section
     {
         title: qsTr("Plots")
-        columns: 2
 
-        CheckBox
-        {
-            name: "statisticalPathPlotsParameterEstimates"
-            label: qsTr("Parameter estimates")
-        }
+		Group
+		{
+			title: qsTr("Path Plots")
+			columns: 1
+
+			CheckBox
+			{
+				name: "statisticalPathPlotsParameterEstimates"
+				label: qsTr("Parameter estimates")
+			}
+
+			IntegerField
+			{
+				name: "pathPlotsLabelLength"
+				label: qsTr("Label length")
+				defaultValue: 3
+				min: 3
+				max: 10
+			}
+		}
+
     }
 
-	Section {
-        text: qsTr("Advanced")
-        Group {
-            Layout.fillWidth: true
-            RadioButtonGroup {
-                title: qsTr("Missing value handling")
+	Section 
+    {
+        id: advanced
+        title: qsTr("Advanced")
+        columns: 2
+
+        Group
+        {
+            title: qsTr("Set for All Models")
+            columns: 3
+            Layout.columnSpan: 2
+
+			Group
+			{
+                title: qsTr("Residual Covariances")
+				CheckBox
+                {
+                    id:			independentCovariancesForAllModels
+                    name: 		"independentCovariancesForAllModels"
+                    label: 		qsTr("Independent variables")
+                    checked: 	true
+                }
+				CheckBox
+                {
+                    id:			mediatorCovariancesForAllModels
+                    name: 		"mediatorCovariancesForAllModels"
+                    label: 		qsTr("Mediators")
+                }
+			}
+
+            Group
+            {
+                title: qsTr("Effects")
+				columns: 1
+
+                CheckBox
+                {
+                    id:			pathCoefficientsForAllModels
+                    name: 		"pathCoefficientsForAllModels"
+                    label: 		qsTr("Paths")
+                    checked: 	true
+                }
+                CheckBox
+                {
+                    id:			mediationEffectsForAllModels
+                    name: 		"mediationEffectsForAllModels"
+                    label: 		qsTr("Mediation")
+                    checked: 	true
+                }
+				CheckBox
+                {
+                    id:			totalEffectsForAllModels
+                    name: 		"totalEffectsForAllModels"
+                    label: 		qsTr("Total")
+                    checked: 	true
+                }
+				CheckBox
+                {
+                    id:			residualCovariancesForAllModels
+                    name: 		"residualCovariancesForAllModels"
+                    label: 		qsTr("Residual covariances")
+                }
+            }
+
+            Group
+            {
+                title: qsTr("Path Plots")
+                CheckBox
+                {
+                    id:			conceptualPathPlotsForAllModels
+                    name: 		"conceptualPathPlotsForAllModels"
+                    label: 		qsTr("Conceptual")
+                    checked: 	true
+                }
+                CheckBox
+                {
+                    id:			statisticalPathPlotsForAllModels
+                    name: 		"statisticalPathPlotsForAllModels"
+                    label: 		qsTr("Statistical")
+                }
+            }
+
+            RadioButtonGroup 
+            {
+                title: qsTr("Missing Value Handling")
                 name: "naAction"
                 RadioButton { text: qsTr("Full Information Maximum Likelihood") ; name: "fiml" ; checked: true }
                 RadioButton { text: qsTr("Exclude cases listwise")              ; name: "listwise"             }
             }
-            RadioButtonGroup {
+            RadioButtonGroup 
+            {
                 title: qsTr("Emulation")
                 name: "emulation"
                 RadioButton { text: qsTr("None")  ; name: "lavaan"  ; checked: true }
                 RadioButton { text: qsTr("Mplus") ; name: "mplus" }
                 RadioButton { text: qsTr("EQS")   ; name: "eqs"   }
             }
-        }
-        Group {
-            Layout.fillWidth: true
-            RadioButtonGroup {
+            RadioButtonGroup 
+            {
                 title: qsTr("Estimator")
                 name: "estimator"
                 RadioButton { text: qsTr("Auto") ; name: "default"; checked: true }
@@ -430,6 +551,24 @@ Form
                 RadioButton { text: qsTr("ULS")  ; name: "uls"      }
                 RadioButton { text: qsTr("DWLS") ; name: "dwls"     }
             }
+
+			ComponentsList
+			{
+				Layout.columnSpan: 3
+				name: "moderationProbes"
+				title: qsTr("Probe Conditional Continuous Effects")
+				values: [16, 50, 84]
+				minimumItems: 1
+				maximumItems: 10
+				rowComponent: DoubleField
+				{
+					name: "probePercentile"
+					afterLabel: qsTr("th percentile")
+					defaultValue: rowValue
+					min: 0
+					max: 100
+				}
+			}
         }
     }
 }

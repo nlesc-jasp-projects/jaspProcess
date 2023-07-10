@@ -27,13 +27,17 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   # Init options: add variables to options to be used in the remainder of the analysis
   .procContainerModels(jaspResults, options)
   .procModelRegList(jaspResults, options)
-  .procModelSyntax(jaspResults, options)
 
   # read dataset
   dataset <- .procReadData(options)
 
+  dataset <- .procAddIntVars(jaspResults, dataset, options)
+
   # error checking
   ready <- .procErrorHandling(dataset, options)
+
+  .procModProbes(jaspResults, dataset, options)
+  .procModelSyntax(jaspResults, options)
 
   # Compute (a list of) results from which tables and plots can be created
   modelsContainer <- .procComputeResults(jaspResults, dataset, options)
@@ -207,19 +211,69 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
     pathVars <- regList[[i]][["vars"]]
 
     # Split path interactions
-    pathVarsSplit <- strsplit(pathVars, ":")
-
+    pathVarsSplit <- strsplit(pathVars, ":|__") # split according to `:` or `__`
+    isThreeWayInt <- grepl("__", pathVars)
+    
     # Replace dummy vars for each term of interactions separately
     pathVarsSplit <- lapply(pathVarsSplit, .replaceDummyVars)
 
     # Paste interaction terms back together
-    regList[[i]][["vars"]] <- sapply(pathVarsSplit, paste, collapse = ":")
+    pathVars[!isThreeWayInt] <- unlist(sapply(pathVarsSplit[!isThreeWayInt], paste, collapse = ":"))
+    pathVars[isThreeWayInt] <- unlist(sapply(pathVarsSplit[isThreeWayInt], paste, collapse = "__"))
+    regList[[i]][["vars"]] <- pathVars
   }
 
   # Replace dummy variables in dependent variables
   names(regList) <- .replaceDummyVars(names(regList))
-
+  
   return(regList)
+}
+
+.procModProbes <- function(jaspResults, dataset, options) {
+  modelsContainer <- jaspResults[["modelsContainer"]]
+
+  for (i in 1:length(options[["processModels"]])) {
+    modelOptions <- options[["processModels"]][[i]]
+    modelName <- modelOptions[["name"]]
+
+    if (is.null(modelsContainer[[modelName]][["modProbes"]])) {
+      modProbes <- .procModProbesSingleModel(modelsContainer[[modelName]][["regList"]]$object, dataset, options)
+      state <- createJaspState(object = modProbes)
+      state$dependOn(
+        optionContainsValue = list(processModels = modelOptions),
+        nestedOptions = .procGetSingleModelsDependencies(as.character(i))
+      )
+      modelsContainer[[modelName]][["modProbes"]] <- state
+    }
+  }
+}
+
+.procModVarsFromRegList <- function(regList) {
+  modVars <- list()
+
+  for (i in 1:length(regList)) {
+    rowSplit <- .strsplitColon(regList[[i]][["vars"]])
+
+    for (v in rowSplit[sapply(rowSplit, length) > 1]) {
+      modVars[[v[2]]] <- c(modVars[[v[2]]], v[1])
+    }
+  }
+
+  return(modVars)
+}
+
+.procModProbesSingleModel <- function(regList, dataset, options) {
+  probeVals <- sapply(options[["moderationProbes"]], function(row) row[["probePercentile"]])/100
+
+  modVars <- .procModVarsFromRegList(regList)
+
+  modProbes <- lapply(encodeColNames(names(modVars)), function(nms) {
+    quantile(dataset[[nms]], probs = probeVals)
+  })
+
+  names(modProbes) <- names(modVars)
+
+  return(modProbes)
 }
 
 .procModelSyntax <- function(jaspResults, options) {
@@ -230,7 +284,7 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
     modelName <- modelOptions[["name"]]
   
     if (is.null(modelsContainer[[modelName]][["syntax"]])) {
-      syntax <- .procModelSyntaxSingleModel(modelsContainer[[modelName]][["regList"]]$object)
+      syntax <- .procModelSyntaxSingleModel(modelsContainer[[modelName]], modelOptions)
       state <- createJaspState(object = syntax)
       state$dependOn(
         optionContainsValue = list(processModels = modelOptions),
@@ -241,30 +295,32 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   }
 }
 
-.procModelSyntaxSingleModel <- function(regList) {
+.procModelSyntaxSingleModel <- function(container, modelOptions) {
   # Concatenate and collapse par names and var names to regression formula
   regSyntax <- paste(
-    paste0(encodeColNames(names(regList))),
-    sapply(regList, function(row) paste(row$parNames, encodeColNames(row$vars), sep = "*", collapse = " + ")),
+    paste0(encodeColNames(names(container[["regList"]]$object))),
+    sapply(container[["regList"]]$object, function(row) paste(row$parNames, encodeColNames(row$vars), sep = "*", collapse = " + ")),
     sep = " ~ "
   )
 
   regSyntax <- paste(
-    sapply(regList, function(row) row[["comment"]]),
+    sapply(container[["regList"]]$object, function(row) row[["comment"]]),
     regSyntax,
     sep = "",
     collapse = "\n"
   )
-  print(regSyntax)
 
-  medEffectSyntax <- .procMedEffects(regList)
+  modVars <- .procModVarsFromRegList(container[["regList"]]$object)
 
-  medEffectSyntax <- paste(
-    "\n# Effect decomposition",
-    medEffectSyntax,
-    sep = "\n"
+  # modProbeSyntax <- .procModEffects(container[["modProbes"]]$object)
+
+  medEffectSyntax <- .procMedEffects(container[["regList"]]$object, modVars, container[["modProbes"]]$object)
+
+  resCovSyntax <- .procResCov(
+    container[["regList"]]$object,
+    modelOptions[["independentCovariances"]],
+    modelOptions[["mediatorCovariances"]]
   )
-  print(medEffectSyntax)
 
   header <- "
   # -------------------------------------------
@@ -272,7 +328,7 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   # -------------------------------------------
   "
 
-  return(paste(header, regSyntax, medEffectSyntax, sep = "\n"))
+  return(paste(header, regSyntax, resCovSyntax, medEffectSyntax, sep = "\n"))
 }
 
 .procAddLavModVar <- function(regList, dependent, variable) {
@@ -290,7 +346,7 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   for (i in 1:length(regList)) {
     # Split interaction terms
     vSplit <- lapply(regList[[i]]$vars, function(v) {
-      unlist(strsplit(v, ":"))
+      unlist(.strsplitColon(v))
     })
     # Get non-mediator vars (-> cXX)
     isIndep <- sapply(vSplit, function(v) {
@@ -359,7 +415,34 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
     }
 
     if (type == "moderators") {
-      # Add interaction independent x moderator var to regress on dependent var
+      # This routine adds three-way interactions (moderated moderation) 
+      # which are not available in standard lavaan syntax. These interactions
+      # are represented as separate variables which are products of the three interacting variables.
+      # The names of these variables are the interacting variable names separated by 
+      # double underscores, e.g.: var1__var2__var3
+
+      # Get all existing interaction terms
+      isInt <- grepl(":", regList[[dependent]][["vars"]])
+      if (any(isInt)) {
+        # Split interaction terms
+        varsSplit <- .strsplitColon(regList[[dependent]][["vars"]])
+        for (v in varsSplit[isInt]) {
+          # If the second term of the interaction is the independent of current path
+          # this indicates a three-way interaction with the independent variable
+          if (v[length(v)] == independent) {
+            # Create three-way interaction variable name
+            interVar <- paste0(paste(v, collapse = "__"), "__", processVariable)
+            # Add interaction independent x moderator1 x moderator2
+            regList <- .procAddLavModVar(regList, dependent, interVar)
+
+            # Also add a two-way interaction moderator1 x moderator2,
+            # otherwise model might be underspecified
+            interVar <- paste0(v[1], ":", processVariable)
+            regList <- .procAddLavModVar(regList, dependent, interVar)
+          }
+        }
+      }
+      # Add regular interaction independent x moderator var to regress on dependent var
       interVar <- paste0(independent, ":", processVariable)
       regList <- .procAddLavModVar(regList, dependent, interVar)
     }
@@ -372,11 +455,46 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   }
 
   regList <- .procAddLavModParNames(regList)
-
   return(regList)
 }
 
-.procMedEffects <- function(regList) {
+.procModEffects <- function(modVarProbes) {
+  modEffects <- lapply(names(modVarProbes), function(nms) {
+    labels <- paste0(nms, gsub("\\%", "", names(modVarProbes[[nms]])))
+    values <- modVarProbes[[nms]]
+    return(paste(labels, values, sep = " := ", collapse = "\n"))
+  })
+  return(paste0("\n# Moderation probes\n", paste(modEffects, collapse = "\n")))
+}
+
+.procMedEffectFromPath <- function(path, regList, modVarProbes) {
+  return(lapply(2:length(path), function(i) {
+    regListRow <- regList[[names(path)[i]]]
+    isMedVar <- regListRow$vars == names(path)[i-1]
+    medPars <- regListRow$parNames[isMedVar]
+    isIntVar <- grepl(":", regListRow$vars)
+    intVarsProbeNames <- NULL
+
+    if (any(isIntVar)) {
+      regVarsSplit <- .strsplitColon(regListRow$vars[isIntVar])
+      intVarIsMed <- sapply(regVarsSplit, function(v) v[1] %in% regListRow$vars[isMedVar])
+
+      if (any(intVarIsMed)) {
+        modIntVars <- sapply(regVarsSplit[intVarIsMed], function(v) v[2])
+        intPars <- regListRow$parNames[isIntVar][intVarIsMed]
+        probeLevels <- gsub("\\%", "", names(modVarProbes[[1]]))
+        intVarsProbes <- lapply(1:length(modIntVars), function(i) paste(intPars[i], format(modVarProbes[[modIntVars[i]]], digits = 3), sep = "*"))
+        intVarsProbeNames <- lapply(modIntVars, function(v) paste(v, probeLevels, sep = "__"))
+        medPars <- paste0("(", paste(medPars, .pasteExpandGrid(intVarsProbes, collapse = " + "), sep = " + "), ")")
+        intVarsProbeNames <- .pasteExpandGrid(intVarsProbeNames, collapse = ".")
+      }
+    }
+
+    return(list(medPars = medPars, intVars = intVarsProbeNames))
+  }))
+}
+
+.procMedEffects <- function(regList, modVars, modVarProbes) {
   # Get dep var
   depVar <- names(regList)[sapply(regList, function(row) row$dep)]
 
@@ -396,37 +514,177 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   medPaths <- igraph::all_simple_paths(graph, from = exoVar, to = depVar, mode = "out")
 
   # Get par names of simple paths
-  medEffectsList <- lapply(medPaths, function(path) sapply(2:length(path), function(i) {
-    regListRow <- regList[[names(path)[i]]]
-    isIntVar <- grepl(":", regListRow$vars)
-    regVarsSplit <- strsplit(regListRow$vars, ":")
-    indepIntVars <- sapply(regVarsSplit, function(v) v[1])
-    medVars <- regListRow$parNames[regListRow$vars == names(path)[i-1]]
-    intVars <- regListRow$parNames[indepIntVars == names(path)[i-1] & isIntVar]
-    # return(list(medVars = medVars, intVars = intVars))
-    return(medVars)
-  }))
+  medEffectsList <- lapply(medPaths, .procMedEffectFromPath, regList = regList, modVarProbes = modVarProbes)
+
+  .pasteDuplicates <- function(row) {
+    pars <- lapply(row, function(col) col$medPars)
+    ints <- lapply(row, function(col) col$intVars)
+
+    isDup <- duplicated(ints) | duplicated(ints, fromLast = TRUE)
+
+    parsUnique <- append(list(as.vector(.doCallPaste(pars[isDup & !is.null(ints)], sep = "*"))), pars[!isDup])
+
+    return(parsUnique[sapply(parsUnique, length) > 0])
+  }
+
+  medEffectsListCombined <- lapply(medEffectsList, function(row) .pasteExpandGrid(
+    .pasteDuplicates(row), collapse = "*"
+  ))
+  medEffectNamesListCombined <- lapply(medEffectsList, function(row) .pasteExpandGrid(
+    unique(Filter(Negate(is.null), lapply(row, function(col) col$intVars))), collapse = "."
+  ))
+
+  # Create coef names of mediation effects
+  medEffectPathNames <- sapply(medPaths, function(path) paste(decodeColNames(names(path)), collapse = "__"))
+
+  medEffectsCollapsed <- unlist(medEffectsListCombined)
+  medEffectNamesCollapsed <- unlist(medEffectNamesListCombined)
+
+  medEffectsCombinedLengths <- sapply(medEffectsListCombined, length)
+  medEffectIsConditional <- rep(medEffectsCombinedLengths > 1, medEffectsCombinedLengths)
+
+  medEffectPathNamesRepeated <- rep(medEffectPathNames, medEffectsCombinedLengths)
+
+  medEffectPathNamesCollapsed <- vector("character", length(medEffectsCollapsed))
+  medEffectPathNamesCollapsed[!medEffectIsConditional] <- medEffectPathNamesRepeated[!medEffectIsConditional]
+  medEffectPathNamesCollapsed[medEffectIsConditional] <- .pasteDot(medEffectPathNamesRepeated[medEffectIsConditional], medEffectNamesCollapsed)
 
   # Concatenate to mediation effects by multiplying par names of paths
-  syntax <- paste(
-    sapply(medPaths, function(path) paste(decodeColNames(names(path)), collapse = "_")),
-    sapply(medEffectsList, function(row) paste(row, collapse = "*")),
-    # paste(
-    #   sapply(medEffectsList, function(row) paste(row$medVars, collapse = " * ")),
-    #   sapply(medEffectsList, function(row) paste(row$intVars, collapse = " + ")),
-    #   sep = " + "
-    # ),
+  medEffectsSyntax <- paste(
+    encodeColNames(medEffectPathNamesCollapsed),
+    medEffectsCollapsed,
     sep = " := ",
     collapse = "\n"
   )
 
-  return(syntax)
+  # Get total effect of X on Y
+  if (length(medEffectsListCombined) > 1) 
+    totEffect <- paste(medEffectsListCombined[[1]], .pasteExpandGrid(.doCallPaste(medEffectsListCombined[-1], sep = " + "), collapse = " + "), sep = " + ")
+  else
+    totEffect <- medEffectsListCombined[[1]]
+
+  dirEffectIsConditional <- medEffectsCombinedLengths[1] > 1
+  indEffectIsConditional <- any(medEffectsCombinedLengths[-1] > 1)
+
+  indEffectNames <- .pasteExpandGrid(.doCallPaste(medEffectNamesListCombined[-1], sep = "."), collapse = ".")
+
+  totEffectLabels <- list()
+
+  if (dirEffectIsConditional) totEffectLabels <- append(totEffectLabels, list(medEffectNamesListCombined[[1]]))
+  if (indEffectIsConditional) totEffectLabels <- append(totEffectLabels, list(indEffectNames))
+  
+  totEffectNames <- .doCallPaste(unique(totEffectLabels), sep = ".")
+
+  # Get total indirect effect of X on Y
+  totIndEffect <- .pasteExpandGrid(.doCallPaste(medEffectsListCombined[-1], sep = " + "), collapse = " + ")
+
+  # Only select total effect if there are no indirect effects
+  totNames <- if(length(medEffectPathNames) == 1) rep("tot", length(totEffect)) else rep(c("tot", "totInd"), c(length(totEffect), length(totIndEffect)))
+  totLabels <- vector("character", length(totNames))
+
+  if(length(medEffectPathNames) == 1) {
+    totEffects <- totEffect
+    totNames <- rep("tot", length(totEffect))
+    totLabels <- .pasteDot(totNames, totEffectNames)
+  } else {
+    totEffects <- c(totEffect, totIndEffect)
+    if (indEffectIsConditional) {
+      totLabels <- .pasteDot(
+        rep(c("tot", "totInd"), c(length(totEffect), length(totIndEffect))),
+        c(totEffectNames, indEffectNames)
+      )
+    } else {
+      totLabels <- c(.pasteDot("tot", totEffectNames), "totInd")
+    }
+  }
+
+  totalEffectsSyntax <- paste(
+    totLabels,
+    totEffects,
+    sep = " := ",
+    collapse = "\n"
+  )
+
+  return(paste(
+    "\n# Mediation effects",
+    medEffectsSyntax,
+    "\n# Total effects",
+    totalEffectsSyntax,
+    sep = "\n"
+  ))
+}
+
+.procResCov <- function(regList, includeExo, includeMed) {
+  resCovList <- list()
+
+  exoVars <- unique(unlist(lapply(regList, function(row) row$vars[!row$vars %in% names(regList)])))
+  intIdx  <- grep(":", exoVars)
+  
+  if (length(exoVars[-intIdx]) > 1 && includeExo) {
+    exoIdxMat <- which(upper.tri(diag(length(exoVars))), arr.ind = TRUE)
+    exoIdxMat <- exoIdxMat[!exoIdxMat[, 1] %in% intIdx & !exoIdxMat[, 2] %in% intIdx, , drop = FALSE]
+    
+    for (i in 1:nrow(exoIdxMat)) {
+      if (!exoVars[exoIdxMat[i, 2]] %in% regList[[exoVars[exoIdxMat[i, 1]]]][["vars"]]) {
+        resCovList[[exoVars[exoIdxMat[i, 1]]]] <- c(resCovList[[exoVars[exoIdxMat[i, 1]]]], exoVars[exoIdxMat[i, 2]])
+      }
+    }
+  }
+
+  medVars <- names(regList)[!sapply(regList, function(row) row$dep)]
+
+  if (length(medVars) > 1 && includeMed) {
+    medIdxMat <- which(upper.tri(diag(length(medVars))), arr.ind = TRUE)
+
+    for (i in 1:nrow(medIdxMat)) {
+      if (!medVars[medIdxMat[i, 2]] %in% regList[[medVars[medIdxMat[i, 1]]]][["vars"]]) {
+        resCovList[[medVars[medIdxMat[i, 1]]]] <- c(resCovList[[medVars[medIdxMat[i, 1]]]], medVars[medIdxMat[i, 2]])
+      }
+    }
+  }
+
+  return(paste0(
+    "\n# Residual covariances\n",
+    paste(
+      encodeColNames(names(resCovList)),
+      sapply(resCovList, function(row) paste(encodeColNames(row), collapse = " + ")),
+      sep = " ~~ ",
+      collapse = "\n"
+    )
+  ))
 }
 
 .procReadData <- function(options) {
   # Read in selected variables from dataset
   vars <- lapply(c('dependent', 'covariates', 'factors'), function(x) options[[x]])
   dataset <- .readDataSetToEnd(columns = unlist(vars))
+  return(dataset)
+}
+
+.procAddIntVars <- function(jaspResults, dataset, options) {
+  modelsContainer <- jaspResults[["modelsContainer"]]
+
+  for (i in 1:length(options[["processModels"]])) {
+    modelOptions <- options[["processModels"]][[i]]
+    modelName <- modelOptions[["name"]]
+    regList <- modelsContainer[[modelName]][["regList"]]$object
+
+    for (row in regList) {
+      # Split three-way interaction variables in syntax
+      varsSplit <- strsplit(row[["vars"]], "__")
+
+      # If there is a three-way interaction in a path, create a new variable in the dataset
+      # as a product of the three interacting variables
+      for (var in varsSplit[sapply(varsSplit, length) > 1]) {
+        # Create variable name like var1__var2__var3
+        varName <- paste(encodeColNames(var), collapse = "__")
+        # Compute product of interacting variables by first creating a string "var1 * var2 * var3"
+        # Then we evaluate the string as R code using the dataset as the environment to evaluate in
+        intVar <- eval(str2lang(paste(encodeColNames(var), collapse = "*")), envir = dataset)
+        dataset[[varName]] = intVar
+      }
+    }
+  }
   return(dataset)
 }
 
@@ -444,7 +702,7 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
 # Results functions ----
 .procCheckFitModel <- function(regList) {
   return(all(sapply(regList, function(row) {
-    varsSplit <- strsplit(row$vars, ":")
+    varsSplit <- .strsplitColon(row$vars)
     return(all(sapply(varsSplit, .procCheckRegListVars)))
   })))
 }
@@ -466,7 +724,7 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
     missing         = options$naAction,
     do.fit          = doFit
   ))
-  
+
   if (inherits(fittedModel, "try-error")) {
     errmsg <- gettextf("Estimation failed\nMessage:\n%s", attr(fittedModel, "condition")$message)
     return(jaspSem:::.decodeVarsInMessage(names(dataset), errmsg))
@@ -488,7 +746,9 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
     c("processModels", modelIdx, "modelNumberMediators"),
     c("processModels", modelIdx, "modelNumberCovariates"),
     c("processModels", modelIdx, "modelNumberModeratorW"),
-    c("processModels", modelIdx, "modelNumberModeratorZ")
+    c("processModels", modelIdx, "modelNumberModeratorZ"),
+    c("processModels", modelIdx, "independentCovariances"),
+    c("processModels", modelIdx, "mediatorCovariances")
   ))
 }
 
@@ -535,24 +795,22 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   procResults <- lapply(options[["processModels"]], function(mod) modelsContainer[[mod[["name"]]]][["fittedModel"]]$object)
   procResults <- .procFilterFittedModels(procResults)
 
-  if (length(procResults) == 0) return()
-
   fitTable <- createJaspTable(title = gettext("Model fit"))
-  fitTable$dependOn(c(.procGetDependencies(), "processModels"))
+  fitTable$dependOn(c(.procGetDependencies(), "processModels", "aicWeights", "bicWeights"))
   fitTable$position <- 0
 
   modelNames <- sapply(options[["processModels"]], function(mod) mod[["name"]])
   isInvalid <- sapply(procResults, is.character)
 
-  if (any(isInvalid)) {
-    errmsg <- gettextf("Model fit could not be assessed because one or more models were not estimated: %s", modelNames[isInvalid])
-    fitTable$setError(errmsg)
-    return()
-  }
-
   fitTable$addColumnInfo(name = "Model",    title = "",                            type = "string" )
   fitTable$addColumnInfo(name = "AIC",      title = gettext("AIC"),                type = "number" )
+  if (options[["aicWeights"]]) {
+    fitTable$addColumnInfo(name = "wAIC", title = gettext("AIC weight"), type = "number")
+  }
   fitTable$addColumnInfo(name = "BIC",      title = gettext("BIC"),                type = "number" )
+  if (options[["bicWeights"]]) {
+    fitTable$addColumnInfo(name = "wBIC", title = gettext("BIC weight"), type = "number")
+  }
   fitTable$addColumnInfo(name = "N",        title = gettext("n"),                  type = "integer")
   fitTable$addColumnInfo(name = "Chisq",    title = gettext("&#967;&sup2;"),       type = "number" ,
                        overtitle = gettext("Baseline test"))
@@ -569,6 +827,14 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
 
   jaspResults[["modelFitTable"]] <- fitTable
 
+  if (length(procResults) == 0) return()
+
+  if (any(isInvalid)) {
+    errmsg <- gettextf("Model fit could not be assessed because one or more models were not estimated: %s", names(procResults)[isInvalid])
+    fitTable$setError(errmsg)
+    return()
+  }
+
   if (length(procResults) == 1) {
     lrt <- jaspSem:::.withWarnings(lavaan::lavTestLRT(procResults[[1]])[-1, ])
     rownames(lrt$value) <- names(procResults)
@@ -577,7 +843,7 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
     Ns <- vapply(procResults, lavaan::lavInspect, 0, what = "ntotal")
     lrtArgs <- procResults
     names(lrtArgs) <- "object" # (the first result is object, the others ...)
-    lrtArgs[["model.names"]] <- names(procResults)
+    lrtArgs[["model.names"]] <- modelNames
     lrt <- try(jaspSem:::.withWarnings(do.call(lavaan::lavTestLRT, lrtArgs)))
 
     if (inherits(lrt, "try-error")) {
@@ -599,6 +865,13 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   fitTable[["dchisq"]]   <- lrt$value[["Chisq diff"]]
   fitTable[["ddf"]]      <- lrt$value[["Df diff"]]
   fitTable[["dPrChisq"]] <- lrt$value[["Pr(>Chisq)"]]
+
+  if (options[["aicWeights"]]) {
+    fitTable[["wAIC"]] <- .computeWeights(lrt$value[["AIC"]])
+  }
+  if (options[["bicWeights"]]) {
+    fitTable[["wBIC"]] <- .computeWeights(lrt$value[["BIC"]])
+  }
 
   # add warning footnote
   if (!is.null(lrt$warnings)) {
@@ -691,15 +964,22 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
       modelContainer <- container[[modelNames[i]]]
     }
 
-    valid <- .procIsValidModel(modelContainer, procResults[[i]])
-
-    if (valid) {
-      if (options[["processModels"]][[i]][["pathCoefficients"]])
-        .procPathCoefficientsTable(modelContainer, options, procResults[[i]], i)
-
-      if (options[["processModels"]][[i]][["mediationEffects"]])
-        .procPathMediationEffectsTable(modelContainer, options, procResults[[i]], i)
+    if (is.character(procResults[[i]])) {
+      modelContainer$setError(procResults[[i]])
+      return()
     }
+
+    if (options[["processModels"]][[i]][["pathCoefficients"]])
+      .procPathCoefficientsTable(modelContainer, options, procResults[[i]], i)
+
+    if (options[["processModels"]][[i]][["mediationEffects"]])
+      .procPathMediationEffectsTable(modelContainer, options, procResults[[i]], i)
+
+    if (options[["processModels"]][[i]][["totalEffects"]])
+      .procPathTotalEffectsTable(modelContainer, options, procResults[[i]], i)
+
+    if (options[["processModels"]][[i]][["residualCovariances"]])
+      .procCovariancesTable(modelContainer, options, procResults[[i]], i)
   }
 }
 
@@ -766,6 +1046,8 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   )
   container[["pathCoefficientsTable"]] <- pathCoefTable
 
+  if (container$getError()) return()
+
   bootstrapCiType <- .procGetBootstrapCiType(options)
 
   pathCoefs <- lavaan::parameterEstimates(procResults, boot.ci.type = bootstrapCiType,
@@ -781,9 +1063,9 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   pathCoefTable$addColumnInfo(name = "op",  title = "", type = "string")
   pathCoefTable$addColumnInfo(name = "rhs", title = "", type = "string")
 
-  pathCoefTable[["lhs"]]   <- pathCoefs$rhs
-  pathCoefTable[["op"]]    <- rep("\u2192", nrow(pathCoefs))
-  pathCoefTable[["rhs"]]   <- pathCoefs$lhs
+  pathCoefTable[["lhs"]] <- gsub("__", ":", pathCoefs$rhs)
+  pathCoefTable[["op"]]  <- rep("\u2192", nrow(pathCoefs))
+  pathCoefTable[["rhs"]] <- gsub("__", ":", pathCoefs$lhs)
 
   if (options$parameterLabels) {
     pathCoefTable$addColumnInfo(name = "label", title = gettext("Label"), type = "string")
@@ -793,32 +1075,60 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   .procCoefficientsTable(pathCoefTable, options, pathCoefs)
 }
 
+.procEffectsTablesGetConditionalLabels <- function(paths, mods) {
+  modProbes <- list()
+
+  for (path in paths) {
+    pathMods <- sapply(path[-1], function(row) row[1])
+
+    for (condEff in path[-1]) {
+      modProbes[[condEff[1]]] <- c(modProbes[[condEff[1]]], paste0(condEff[2], "th"))
+
+      for (condEff in mods[!mods %in% pathMods]) {
+        modProbes[[condEff]] <- c(modProbes[[condEff]], "")
+      }
+    }
+  }
+
+  return(modProbes)
+}
+
 .procPathMediationEffectsTable <- function(container, options, procResults, modelIdx) {
   if (!is.null(container[["mediationEffectsTable"]]) || !procResults@Options[["do.fit"]]) return()
 
   medEffectsTable <- createJaspTable(title = gettext("Mediation effects"))
   medEffectsTable$dependOn(
-    options = "parameterLabels",
+    options = c("parameterLabels", "moderationProbes"),
     nestedOptions = list(c("processModels", as.character(modelIdx), "mediationEffects"))
   )
 
   container[["mediationEffectsTable"]] <- medEffectsTable
+
+  if (container$getError()) return()
 
   pathCoefs <- lavaan::parameterEstimates(procResults)
 
   if (!procResults@Fit@converged) {
     medEffectsTable$addFootnote(gettext("Model did not converge."))
   }
-
+  
   medEffects <- pathCoefs[pathCoefs$op == ":=",]
 
+  labelSplit <- lapply(strsplit(medEffects$lhs, "\\."), strsplit, split = "__")
+  
+  # Only use label splits of length > 1 to omit total effects
+  labelSplit <- labelSplit[sapply(labelSplit, function(path) length(path[[1]])) > 1]
+  
   # Get paths from label of mediation effect
-  medPaths <- lapply(medEffects$lhs, function(path) strsplit(path, "_")[[1]])
+  medPaths <- lapply(labelSplit, function(path) path[[1]])
+  
   # Get path lengths
   medPathLengths <- sapply(medPaths, length)
+
   # Sort paths to incresaing length
   medLengthSortIdx <- sort(medPathLengths, index.return = TRUE)$ix
   medEffects <- medEffects[medLengthSortIdx, ]
+
   # Add a column for each step of longest path
   for (i in 1:max(medPathLengths)) {
     # If path has step add var name otherwise empty
@@ -836,21 +1146,129 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
     medEffectsTable[[paste0("lhs_", i)]] <- medEffect
   }
 
+  medEffectIsConditional <- sapply(labelSplit, function(path) length(path) > 1)
+
+  uniqueMods <- unique(unlist(lapply(labelSplit[medEffectIsConditional], function(path) lapply(path[-1], function(row) row[1]))))
+
+  modProbes <- .procEffectsTablesGetConditionalLabels(labelSplit[medEffectIsConditional], uniqueMods)
+
+  for (mod in uniqueMods) {
+    medEffectsTable$addColumnInfo(name = mod, title = encodeColNames(mod), type = "string", combine = FALSE) # combine = F because empty cells indicate no moderation
+    modLabels <- vector("character", length(medEffectIsConditional))
+    modLabels[medEffectIsConditional] <- modProbes[[mod]]
+    medEffectsTable[[mod]] <- modLabels
+  }
+
   # Add column with parameter labels
   if (options$parameterLabels) {
-    medEffectsTable$addColumnInfo(name = "label", title = gettext("Label"), type = "string")
-    medEffectsTable[["label"]] <- gsub("\\*", " \u273B ", medEffects$rhs)
+    medEffectsTable <- .procEffectsTablesParameterLabels(medEffectsTable, medEffects)
   }
 
   .procCoefficientsTable(medEffectsTable, options, medEffects)
+}
+
+.procPathTotalEffectsTable <- function(container, options, procResults, modelIdx) {
+  if (!is.null(container[["totalEffectsTable"]]) || !procResults@Options[["do.fit"]]) return()
+
+  totEffectsTable <- createJaspTable(title = gettext("Total effects"))
+  totEffectsTable$dependOn(
+    options = c("parameterLabels", "moderationProbes"),
+    nestedOptions = list(c("processModels", as.character(modelIdx), "totalEffects"))
+  )
+
+  container[["totalEffectsTable"]] <- totEffectsTable
+
+  if (container$getError()) return()
+
+  pathCoefs <- lavaan::parameterEstimates(procResults)
+
+  if (!procResults@Fit@converged) {
+    totEffectsTable$addFootnote(gettext("Model did not converge."))
+  }
+
+  medEffects <- pathCoefs[pathCoefs$op == ":=", ]
+
+  labelSplit <- lapply(strsplit(medEffects$lhs, "\\."), strsplit, split = "__")
+
+  # Only use label splits of length > 1 to omit total effects
+  isTotEffect <- sapply(labelSplit, function(path) length(path[[1]])) == 1
+  labelSplit <- labelSplit[isTotEffect]
+
+  # Get paths from label of mediation effect
+  totEffectLabels <- sapply(labelSplit, function(path) path[[1]])
+  totEffects <- medEffects[isTotEffect, ]
+
+  totEffectsTable$addColumnInfo(name = "lhs", title = "", type = "string", combine = TRUE)
+  totEffectsTable[["lhs"]] <- ifelse(totEffectLabels == "tot", gettext("Total"), gettext("Total indirect"))
+
+  uniqueMods <- unique(unlist(lapply(labelSplit, function(path) lapply(path[-1], function(row) row[1]))))
+
+  modProbes <- .procEffectsTablesGetConditionalLabels(labelSplit, uniqueMods)
+
+  for (mod in uniqueMods) {
+    totEffectsTable$addColumnInfo(name = mod, title = encodeColNames(mod), type = "string", combine = FALSE)
+    totEffectsTable[[mod]] <- modProbes[[mod]]
+  }
+
+  # Add column with parameter labels
+  if (options$parameterLabels) {
+    totEffectsTable <- .procEffectsTablesParameterLabels(totEffectsTable, totEffects)
+  }
+
+  .procCoefficientsTable(totEffectsTable, options, totEffects)
+}
+
+.procEffectsTablesParameterLabels <- function(jaspTable, effects) {
+  jaspTable$addColumnInfo(name = "label", title = gettext("Label"), type = "string")
+  jaspTable[["label"]] <- gsub("-", "\u2212", gsub("\\+", " \uFF0B ", gsub("\\*", " \u273B ", effects$rhs)))
+  return(jaspTable)
+}
+
+.procCovariancesTable <- function(container, options, procResults, modelIdx) {
+  if (!is.null(container[["covariancesTable"]])) return()
+
+  pathCoefTable <- createJaspTable(title = gettext("Residual covariances"))
+  pathCoefTable$dependOn(
+    nestedOptions = list(c("processModels", as.character(modelIdx), "residualCovariances"))
+  )
+  container[["covariancesTable"]] <- pathCoefTable
+
+  if (container$getError()) return()
+
+  bootstrapCiType <- .procGetBootstrapCiType(options)
+
+  pathCoefs <- lavaan::parameterEstimates(procResults, boot.ci.type = bootstrapCiType,
+                                          level = options$ciLevel)
+
+  if (!procResults@Fit@converged) {
+    pathCoefTable$addFootnote(gettext("Model did not converge."))
+  }
+
+  pathCoefs <- pathCoefs[pathCoefs$op == "~~" & !is.na(pathCoefs$z),]
+
+  pathCoefTable$addColumnInfo(name = "lhs", title = "", type = "string")
+  pathCoefTable$addColumnInfo(name = "op",  title = "", type = "string")
+  pathCoefTable$addColumnInfo(name = "rhs", title = "", type = "string")
+
+  pathCoefTable[["lhs"]]   <- pathCoefs$rhs
+  pathCoefTable[["op"]]    <- rep("\u2194", nrow(pathCoefs))
+  pathCoefTable[["rhs"]]   <- pathCoefs$lhs
+
+  .procCoefficientsTable(pathCoefTable, options, pathCoefs)
 }
 
 .procConceptPathPlot <- function(container, options, procResults, modelIdx) {
   if (!is.null(container[["conceptPathPlot"]])) return()
 
   procPathPlot <- createJaspPlot(title = gettext("Conceptual path plot"), height = 320, width = 480)
-  procPathPlot$dependOn(nestedOptions = list(c("processModels", as.character(modelIdx), "conceptualPathPlot")))
+  procPathPlot$dependOn(
+    options = "pathPlotsLabelLength",
+    nestedOptions = list(c("processModels", as.character(modelIdx), "conceptualPathPlot"))
+  )
   container[["conceptPathPlot"]] <- procPathPlot
+
+  if (container$getError()) return()
+
   procPathPlot$plotObject <- .procLavToGraph(procResults, type = "conceptual", estimates = FALSE, options)
 }
 
@@ -859,10 +1277,13 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
 
   procPathPlot <- createJaspPlot(title = gettext("Statistical path plot"), height = 320, width = 480)
   procPathPlot$dependOn(
-    options = "statisticalPathPlotsParameterEstimates",
+    options = c("statisticalPathPlotsParameterEstimates", "pathPlotsLabelLength"),
     nestedOptions = list(c("processModels", as.character(modelIdx), "statisticalPathPlot"))
   )
   container[["statPathPlot"]] <- procPathPlot
+
+  if (container$getError()) return()
+
   procPathPlot$plotObject <- .procLavToGraph(procResults, type = "statistical", estimates = options[["statisticalPathPlotsParameterEstimates"]], options)
 }
 
@@ -943,9 +1364,132 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   return(layout)
 }
 
+.procModGraphLayoutConceptual <- function(intPathsSplitPruned, layout) {
+  # Node names are in rownames
+  nodeNames <- rownames(layout)
+
+  # Keep track of different moderators
+  j <- 1
+
+  for (path in intPathsSplitPruned) {
+    # Calc y pos for first moderator in balance to existing layout
+    modPosY <-.minMaxSubAddOne(layout[, 2])
+
+    # Iterate over moderators leaving out the first and last element (independent and dependent variables)
+    for (i in 1:(length(path)-2)) {
+      # Only add moderators (at index i+1 in path) that are not in the layout yet 
+      if (!path[i+1] %in% nodeNames) {
+        # Get index of independent and dependent node in layout
+        # Independent node is at index i and dependent is the last element in path
+        idxIndep <- which(nodeNames == path[i])
+        idxDep <- which(nodeNames == path[length(path)])
+        # Calculate pos of hidden helper node as average between indep and dep node pos
+        nodePosI <- apply(layout[c(idxIndep, idxDep), ], 2, mean)
+        modPosY <- modPosY + (i-1) * sign(modPosY)
+
+        if (i == 1) {
+          # First moderator has same x pos as hidden helper node
+          modPos <- c(nodePosI[1], modPosY)
+        } else {
+          # Moderating moderator gets pos as average between independent (at previous index in path) and first moderator
+          idxPrev <- which(nodeNames == path[i-1])
+          modPos <- apply(layout[c(idxPrev, idxIndep), ], 2, mean)
+        }
+        # Append to node names and layout
+        # Hidden helper node gets index j
+        nodeNameI <- paste0("i",  j)
+        # Name of moderator is at index i+1 in path
+        nodeNames <- c(nodeNames, path[i+1], nodeNameI)
+        layout <- rbind(layout, modPos, nodePosI)
+        # Set hidden helper node as last element in path so it becomes the dependent node in next interation
+        path[length(path)] <- nodeNameI
+        # Increase number of moderators
+        j <- j + 1
+      }
+    }
+  }
+
+  # Assign updated node names back to layout
+  rownames(layout) <- nodeNames
+
+  return(layout)
+}
+
+.procModGraphLayoutStatistical <- function(intPathsSplitPruned, layout) {
+  # Node names are in rownames
+  nodeNames <- rownames(layout)
+
+  for (path in intPathsSplitPruned) {
+    # Get index of independent and dependent node in layout
+    idxIndep <- which(nodeNames == path[1])
+    idxDep <- which(nodeNames == path[length(path)])
+
+    # Calculate pos of hidden helper node as average between indep and dep node pos
+    nodePosI <- apply(layout[c(idxIndep, idxDep), ], 2, mean)
+
+    # Calc y pos for first moderator in balance to existing layout
+    modPosY <- .minMaxSubAddOne(layout[, 2])
+
+    # Iterate over moderators leaving out the first and last element (independent and dependent variables)
+    for (i in 1:(length(path)-2)) {
+      # Update y coordinate depending on number of moderators on path
+      # Add +/- 1 for each additional moderator
+      modPosY <- modPosY + (i-1) * sign(modPosY)
+
+      # Moderator pos has same x pos as hidden helper node
+      modPos <- c(nodePosI[1], modPosY)
+
+      # Calculate all combinations of moderators that interact with each other
+      combs <- combn(path[-length(path)], length(path)-i)
+
+      # Create interaction term node labels from combinations
+      ints <- apply(combs, 2, paste, collapse = ":")
+
+      # Spread out interaction terms on the y axis (all on same x axis)
+      intsPos <- cbind(nodePosI[1], sign(modPosY) * (1:length(ints)) + modPosY)
+
+      # Append to node names and layout
+      # Name of moderator is at index i+1 in path, also add interaction terms
+      nodeNames <- c(nodeNames, path[i+1], ints)
+      layout <- rbind(layout, modPos, intsPos)
+
+      # Update starting pos of next moderator path by maximum of interaction y coordinate
+      modPosY <- intsPos[length(intsPos)]
+    }
+  }
+
+  # Assign updated node names back to layout
+  rownames(layout) <- nodeNames
+
+  return(layout)
+}
+
+.procPruneIntTerms <- function(paths, prunedPaths = list()) {
+  # This function prunes moderator paths
+  # It finds the longest path and removes all paths that are a subset of this path
+  # leaving longest unique paths
+  
+  # Find longest moderator path
+  longestPathIdx <- which.max(sapply(paths, length))
+
+  # Add it to result
+  prunedPaths <- append(prunedPaths, paths[longestPathIdx])
+
+  # Check which other paths are a subset of longest path
+  allVarsInLongestPath <- sapply(paths[-longestPathIdx], function(path) all(path %in% paths[[longestPathIdx]]))
+  
+  # If all are a subset, return only longest paths
+  if (all(allVarsInLongestPath)) return(prunedPaths)
+
+  # Apply function recursively removing the longest path and all subset paths
+  return(.procPruneIntTerms(paths[-longestPathIdx][!allVarsInLongestPath], prunedPaths))
+}
+
 .procLavToGraph <- function(procResults, type, estimates, options) {
   # Get table with SEM pars from lavaan model
   parTbl <- lavaan::parameterTable(procResults)
+  parTbl$lhs <- gsub("__", ":", parTbl$lhs)
+  parTbl$rhs <- gsub("__", ":", parTbl$rhs)
 
   # Create path matrix where first col is "from" and second col is "to", third col is estimate
   labelField <- ifelse(estimates, "est", "label")
@@ -955,18 +1499,15 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   isIntPath <- grepl(":", paths[, 1])
 
   # Split interaction terms
-  intPathsSplit <- strsplit(paths[isIntPath, 1], ":")
+  intPathsSplit <- .strsplitColon(paths[isIntPath, 1])
 
   # Get moderator vars from interaction terms
-  mods <- sapply(intPathsSplit, function(path) path[2])
-
-  # Get independent vars from interaction terms
-  indeps <- sapply(intPathsSplit, function(path) path[1])
+  mods <- unique(unlist(sapply(intPathsSplit, function(path) path[-1])))
 
   # Create matrix with moderator paths
   if (type == "conceptual") {
     # Adds paths from moderators to helper nodes "iX" which will be invisible
-    modPaths <- matrix(c(mods, paste0("i", 1:length(mods)), ""), ncol = 3)
+    modPaths <- matrix(c(mods, paste0("i", 1:length(mods)), rep("", length(mods))), ncol = 3)
 
     # Add hidden path for single moderator (fixes qgraph bug)
     if (nrow(modPaths) == 1 && nrow(paths) == 3) {
@@ -976,9 +1517,10 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
     # Paths from moderator and interaction term to dep var node
     modPaths <- paths[isIntPath | paths[, 1] %in% mods, , drop = FALSE]
   }
+  
   # Filter out non-moderation paths -> main paths
   mainPaths <- paths[!isIntPath & !paths[, 1] %in% mods[!mods %in% paths[, 2]], , drop = FALSE]
-
+  
   # Get layout of main paths: matrix with x,y coordinates for each node
   layout <- .procMainGraphLayout(mainPaths[, 1:2, drop = FALSE], decodeColNames(options[["dependent"]]))
 
@@ -990,34 +1532,25 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
 
   # Remove duplicate paths
   mainPaths <- mainPaths[!duplicated(mainPaths), ]
-
+  
   # Add layout of moderator nodes
   if (length(mods) > 0) {
-    for (i in 1:length(mods)) {
-      # Get index of independent and dependent node in layout
-      idxIndep <- which(nodeNames == indeps[i])
-      idxDep <- which(nodeNames == paths[isIntPath, 2][i])
-      # Calculate pos of hidden helper node as average between indep and dep node pos
-      nodePosI <- apply(layout[c(idxIndep, idxDep), ], 2, mean)
-      # Moderator pos has same x pos as hidden helper node
-      # y pos is chosen so that graph is balanced out
-      modPosY <- ifelse(abs(max(layout[, 2])) > abs(min(layout[, 2])), min(layout[, 2]) - 1, max(layout[, 2]) + 1)
-      modPos <- c(nodePosI[1], modPosY)
-      # Append to node names and layout
-      if (type == "conceptual") {
-        nodeNames <- c(nodeNames, mods[i], paste0("i", i))
-        layout <- rbind(layout, modPos, nodePosI)
-      } else {
-        # Place interaction term above/below moderator node
-        intPos <- c(nodePosI[1], modPosY + ifelse(modPosY > 0, 1, -1))
-        nodeNames <- c(nodeNames, mods[i], paths[isIntPath, 1][i])
-        layout <- rbind(layout, modPos, intPos)
-      }
+    # Add dependent variable to end of each moderator path
+    intPathsSplitDep <- lapply(1:length(intPathsSplit), function(i) c(intPathsSplit[[i]], paths[isIntPath, 2][i]))
+    # Prune moderator paths by only leaving the longest unique paths
+    intPathsSplitPruned <- .procPruneIntTerms(intPathsSplitDep)
+
+    # Calculate layout
+    if (type == "conceptual") {
+      layout <- .procModGraphLayoutConceptual(intPathsSplitPruned, layout)
+    } else {
+      layout <- .procModGraphLayoutStatistical(intPathsSplitPruned, layout)
     }
   }
 
   # Order of node labels as in qgraph
   graphNodeNames <- unique(as.vector(mainPaths[, 1:2, drop = FALSE]))
+
   # Get idx of hidden helper node (to make it invisible)
   graphIntIdx <- grepl("i[[:digit:]]", graphNodeNames)
 
@@ -1037,9 +1570,9 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
   nodeLabels[graphIntIdx] <- ""
 
   edge_color <- rep("black", nrow(mainPaths))
-
+  
   # Hide helper edge for single moderator
-  if (nrow(modPaths) == 2 && nrow(mainPaths) == 3 && type == "conceptual") {
+  if (length(mods) == 1 && nrow(mainPaths) == 3 && type == "conceptual") {
     edge_color[3] <- "white"
   }
 
@@ -1050,10 +1583,10 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
 
     if (estimates) edge_labels <- round(as.numeric(edge_labels), 3)
   }
-
+  
   g <- jaspBase:::.suppressGrDevice(qgraph::qgraph(
     mainPaths[, 1:2, drop = FALSE],
-    layout = layout[match(graphNodeNames, nodeNames), ], # match order of layout
+    layout = layout[match(graphNodeNames, rownames(layout)), ], # match order of layout
     vsize = nodeSize,
     shape = nodeShape,
     labels = TRUE,
@@ -1065,7 +1598,10 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
 
   # There seems to be a bug in qgraph where specifying labels
   # in the initial function call does not work
-  g$graphAttributes$Nodes$labels <- abbreviate(.procDecodeVarNames(nodeLabels), minlength = 3)
+  g$graphAttributes$Nodes$labels <- abbreviate(
+    .procDecodeVarNames(nodeLabels),
+    minlength = options[["pathPlotsLabelLength"]]
+  )
 
   return(g)
 }
@@ -1091,4 +1627,36 @@ ClassicProcess <- function(jaspResults, dataset = NULL, options) {
       syntaxContainer[[modelName]] <- modelSyntax
     }
   }
+}
+
+# Helper functions ----
+
+.pasteExpandGrid <- function(obj, collapse) {
+  return(apply(expand.grid(obj), 1, paste, collapse = collapse))
+}
+
+.doCallPaste <- function(obj, sep) {
+  return(do.call(paste, append(obj, list(sep = sep))))
+}
+
+.pasteDot <- function(...) {
+  return(paste(..., sep = "."))
+}
+
+.computeWeights <- function(x) {
+  diffExp <- exp(-0.5*(x - min(x, na.rm = TRUE)))
+  return(diffExp/sum(diffExp, na.rm = TRUE))
+}
+
+.strsplitColon <- function(x) {
+  return(strsplit(x, ":"))
+}
+
+.minMaxSubAddOne <- function(x) {
+  # If max(x) is higher than min(x), return min(x) - 1, otherwise max(x) + 1
+  minMax <- range(x)
+
+  if (abs(minMax[2]) > abs(minMax[1])) return(minMax[1] - 1)
+
+  return(minMax[2] + 1)
 }
